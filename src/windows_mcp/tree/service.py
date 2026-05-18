@@ -772,8 +772,12 @@ class Tree:
                     if ia2_result:
                         dom_interactive_nodes.extend(ia2_result.interactive_nodes)
                         dom_informative_nodes.extend(ia2_result.informative_nodes)
-                        self.dom_bounding_box = ia2_result.dom_bounding_box or window_box
-                        self.dom_is_ia2 = True
+                        # Pin the bbox to the FIRST Firefox window walked (the active
+                        # one — it's first in windows_handles). Subsequent windows
+                        # contribute nodes but mustn't clobber the active window's bbox.
+                        if not self.dom_is_ia2:
+                            self.dom_bounding_box = ia2_result.dom_bounding_box or window_box
+                            self.dom_is_ia2 = True
                         logger.info(
                             "IA2 fallback for '%s' produced %d interactive / %d informative nodes in %.1fms",
                             window_name,

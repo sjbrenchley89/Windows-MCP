@@ -94,14 +94,14 @@ class TestRoleClassification:
             ia2.ROLE_CHECKBUTTON,
             ia2.ROLE_RADIOBUTTON,
         ):
-            assert role in ia2.INTERACTIVE_ROLES
+            assert role in ia2.INTERACTIVE_MSAA_ROLES
 
     def test_informative_roles_contains_text(self):
-        assert ia2.ROLE_STATICTEXT in ia2.INFORMATIVE_ROLES
-        assert ia2.ROLE_TEXT in ia2.INFORMATIVE_ROLES
+        assert ia2.ROLE_STATICTEXT in ia2.INFORMATIVE_MSAA_ROLES
+        assert ia2.ROLE_TEXT in ia2.INFORMATIVE_MSAA_ROLES
 
     def test_disjoint_role_sets(self):
-        assert not (ia2.INTERACTIVE_ROLES & ia2.INFORMATIVE_ROLES)
+        assert not (ia2.INTERACTIVE_MSAA_ROLES & ia2.INFORMATIVE_MSAA_ROLES)
 
 
 class TestWalkerRecord:

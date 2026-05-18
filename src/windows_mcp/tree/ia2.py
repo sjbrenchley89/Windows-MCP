@@ -19,54 +19,48 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
+from _ctypes import COMError
+
 from windows_mcp.tree.views import BoundingBox, TextElementNode, TreeElementNode
 
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# COM interface bootstrap (deferred — keeps the module importable on Linux for
-# the pure-Python helpers below; the COM-touching code is only reached at
-# runtime on Windows.)
-# ---------------------------------------------------------------------------
-
 _IAccessible = None
-_COMError = None
+_oleacc_signatures_set = False
 
 
 def _iaccessible():
-    """Lazily resolve the IAccessible interface class from oleacc.dll's type library."""
-    global _IAccessible, _COMError
+    """Lazily resolve the IAccessible interface class and bind oleacc signatures.
+
+    Deferred until first use so the module imports cleanly without a COM dispatch.
+    The signature bind is idempotent but guarded so we don't pay the attribute
+    writes on every traverse_window call.
+    """
+    global _IAccessible, _oleacc_signatures_set
     if _IAccessible is None:
+        import ctypes
+        from ctypes import wintypes
+
         import comtypes  # noqa: F401  (forces COM module init)
         import comtypes.client
-        from _ctypes import COMError as _ComErrorCls
+        from comtypes import GUID
 
         comtypes.client.GetModule("oleacc.dll")
         from comtypes.gen.Accessibility import IAccessible  # type: ignore
 
         _IAccessible = IAccessible
-        _COMError = _ComErrorCls
+
+        oleacc = ctypes.windll.oleacc
+        oleacc.AccessibleObjectFromWindow.argtypes = [
+            wintypes.HWND,
+            wintypes.DWORD,
+            ctypes.POINTER(GUID),
+            ctypes.POINTER(ctypes.POINTER(IAccessible)),
+        ]
+        oleacc.AccessibleObjectFromWindow.restype = ctypes.HRESULT
+        _oleacc_signatures_set = True
     return _IAccessible
-
-
-class _UnavailableCOMError(Exception):
-    """Sentinel exception type used when the real COMError isn't importable
-    (i.e. when this module is being unit-tested on a non-Windows host).
-    Catching this in ``except`` blocks is a no-op since no real call will ever
-    raise it on that platform."""
-
-
-def _com_error_cls():
-    """Return the COMError class (lazy — only available on Windows)."""
-    global _COMError
-    if _COMError is None:
-        try:
-            from _ctypes import COMError as _ComErrorCls  # type: ignore
-        except ImportError:
-            _ComErrorCls = _UnavailableCOMError
-        _COMError = _ComErrorCls
-    return _COMError
 
 
 # OBJID_CLIENT — request the client-area accessible object
@@ -83,7 +77,6 @@ CHILDID_SELF = 0
 ROLE_DOCUMENT = 0x0F
 ROLE_GROUPING = 0x14
 ROLE_TOOLBAR = 0x16
-ROLE_STATUSBAR = 0x17
 ROLE_TABLE = 0x18
 ROLE_LINK = 0x1E
 ROLE_LIST = 0x21
@@ -99,13 +92,11 @@ ROLE_CHECKBUTTON = 0x2C
 ROLE_RADIOBUTTON = 0x2D
 ROLE_COMBOBOX = 0x2E
 ROLE_DROPLIST = 0x2F
-ROLE_PROGRESSBAR = 0x30
 ROLE_SLIDER = 0x33
 ROLE_BUTTONDROPDOWN = 0x38
 ROLE_PAGETABLIST = 0x3C
 ROLE_SPLITBUTTON = 0x3E
 
-STATE_SYSTEM_UNAVAILABLE = 0x00000001
 STATE_SYSTEM_FOCUSED = 0x00000004
 STATE_SYSTEM_INVISIBLE = 0x00008000
 STATE_SYSTEM_OFFSCREEN = 0x00010000
@@ -138,7 +129,9 @@ ROLE_NAMES: dict[int, str] = {
     ROLE_SPLITBUTTON: "button",
 }
 
-INTERACTIVE_ROLES: set[int] = {
+# Disambiguated from windows_mcp.tree.config.INTERACTIVE_ROLES which holds UIA
+# (string) roles. These are MSAA integer roles for the IA2 fallback path.
+INTERACTIVE_MSAA_ROLES: set[int] = {
     ROLE_LINK,
     ROLE_PUSHBUTTON,
     ROLE_CHECKBUTTON,
@@ -153,7 +146,7 @@ INTERACTIVE_ROLES: set[int] = {
     ROLE_SPLITBUTTON,
 }
 
-INFORMATIVE_ROLES: set[int] = {
+INFORMATIVE_MSAA_ROLES: set[int] = {
     ROLE_STATICTEXT,
     ROLE_TEXT,
 }
@@ -191,20 +184,9 @@ def role_name(role: object) -> str:
 def _accessible_object_from_window(hwnd: int):
     """Wrap oleacc!AccessibleObjectFromWindow and return a comtypes IAccessible pointer."""
     import ctypes
-    from ctypes import wintypes
 
-    from comtypes import GUID  # noqa: F401  (re-exported for type clarity)
-
-    iface = _iaccessible()
+    iface = _iaccessible()  # binds argtypes/restype on first call
     oleacc = ctypes.windll.oleacc
-
-    oleacc.AccessibleObjectFromWindow.argtypes = [
-        wintypes.HWND,
-        wintypes.DWORD,
-        ctypes.POINTER(GUID),
-        ctypes.POINTER(ctypes.POINTER(iface)),
-    ]
-    oleacc.AccessibleObjectFromWindow.restype = ctypes.HRESULT
 
     pacc = ctypes.POINTER(iface)()
     hr = oleacc.AccessibleObjectFromWindow(
@@ -226,7 +208,6 @@ def _accessible_object_from_window(hwnd: int):
 
 
 def _acc_role(iacc) -> object:
-    COMError = _com_error_cls()
     try:
         return iacc.accRole(CHILDID_SELF)
     except COMError:
@@ -234,18 +215,14 @@ def _acc_role(iacc) -> object:
 
 
 def _acc_state(iacc) -> int:
-    COMError = _com_error_cls()
     try:
         state = iacc.accState(CHILDID_SELF)
-        return int(state) if isinstance(state, int) else 0
-    except COMError:
-        return 0
-    except (TypeError, ValueError):
+        return state if isinstance(state, int) else 0
+    except (COMError, TypeError, ValueError):
         return 0
 
 
 def _acc_name(iacc) -> str:
-    COMError = _com_error_cls()
     try:
         name = iacc.accName(CHILDID_SELF)
         return (name or "").strip()
@@ -254,7 +231,6 @@ def _acc_name(iacc) -> str:
 
 
 def _acc_value(iacc) -> str:
-    COMError = _com_error_cls()
     try:
         value = iacc.accValue(CHILDID_SELF)
         return (value or "").strip()
@@ -264,19 +240,15 @@ def _acc_value(iacc) -> str:
 
 def _acc_location(iacc) -> Optional[tuple[int, int, int, int]]:
     """Return (left, top, width, height) for the element, or None on failure."""
-    COMError = _com_error_cls()
     try:
         # accLocation has out-params; comtypes returns a tuple.
         left, top, width, height = iacc.accLocation(CHILDID_SELF)
         return int(left), int(top), int(width), int(height)
-    except COMError:
-        return None
-    except (TypeError, ValueError):
+    except (COMError, TypeError, ValueError):
         return None
 
 
 def _acc_child_count(iacc) -> int:
-    COMError = _com_error_cls()
     try:
         return int(iacc.accChildCount)
     except (COMError, TypeError, ValueError):
@@ -285,7 +257,6 @@ def _acc_child_count(iacc) -> int:
 
 def _iter_children(iacc, iface):
     """Yield IAccessible children. Skips simple-child entries (no IDispatch)."""
-    COMError = _com_error_cls()
     count = _acc_child_count(iacc)
     if count <= 0:
         return
@@ -380,7 +351,6 @@ class _Walker:
         if self.in_document > 0 and _is_visible(state, location):
             self._record(iacc, role, state, location)
 
-        COMError = _com_error_cls()
         for child in _iter_children(iacc, iface):
             try:
                 self.walk(child, iface, depth + 1)
@@ -405,33 +375,29 @@ class _Walker:
         role_label = role_name(role)
         name = _acc_name(iacc)
 
-        if role_int in INFORMATIVE_ROLES:
+        if role_int in INFORMATIVE_MSAA_ROLES:
             if name:
                 self.informative.append(TextElementNode(text=name))
             return
 
-        if role_int in INTERACTIVE_ROLES or (state & STATE_SYSTEM_LINKED):
+        if role_int in INTERACTIVE_MSAA_ROLES or (state & STATE_SYSTEM_LINKED):
             bbox = _bounding_box_from_location(location, self.dom_clip)
             if bbox.width <= 0 or bbox.height <= 0:
                 return
-            center = bbox.get_center()
-            metadata: dict[str, object] = {}
-            if state & STATE_SYSTEM_FOCUSED:
-                metadata["has_focused"] = True
-            if not (state & STATE_SYSTEM_FOCUSED):
-                metadata.setdefault("has_focused", False)
+            metadata: dict[str, object] = {
+                "has_focused": bool(state & STATE_SYSTEM_FOCUSED),
+            }
             value = _acc_value(iacc)
             if value and role_int == ROLE_LINK:
                 metadata["url"] = value
             elif value and role_int in {ROLE_COMBOBOX, ROLE_DROPLIST, ROLE_SLIDER}:
                 metadata["value"] = value
-            display_name = name or value or role_label
             self.interactive.append(
                 TreeElementNode(
-                    name=display_name,
-                    control_type=role_label.title() or "Unknown",
+                    name=name or value or role_label,
+                    control_type=role_label.title(),
                     bounding_box=bbox,
-                    center=center,
+                    center=bbox.get_center(),
                     window_name=self.window_name,
                     metadata=metadata,
                 )
@@ -515,11 +481,17 @@ def traverse_window(
         return IA2TraversalResult(window_bounding_box, [], [])
 
     walker = _Walker(window_name=window_name, dom_clip=window_bounding_box)
-    COMError = _com_error_cls()
     try:
         walker.walk(root, iface)
     except COMError as e:
         logger.warning("IA2 walk for hwnd %#x aborted with COMError: %s", hwnd, e)
+
+    if walker.seen >= MAX_NODES:
+        logger.warning(
+            "IA2 walk for '%s' hit MAX_NODES=%d cap; output is truncated",
+            window_name,
+            MAX_NODES,
+        )
 
     # Prefer the active document's bbox (the web content area) over the window bbox.
     # Falls back to the window bbox if no document was found in the tree.
