@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "claude/**"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint-and-test:
+    name: Lint and test
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+
+      - name: Set up Python 3.13
+        run: uv python install 3.13
+
+      - name: Create virtual environment
+        run: uv venv --python 3.13
+
+      - name: Install dev tools
+        run: uv pip install ruff pytest pytest-asyncio
+
+      - name: Install Linux-compatible runtime deps
+        run: |
+          uv pip install \
+            click fastmcp fuzzywuzzy markdownify pillow platformdirs \
+            posthog psutil python-levenshtein requests tabulate thefuzz uuid7
+
+      - name: Install project (without Windows-only deps)
+        run: uv pip install --no-deps -e .
+
+      - name: Lint
+        run: .venv/bin/ruff check .
+
+      - name: Test
+        run: .venv/bin/pytest
