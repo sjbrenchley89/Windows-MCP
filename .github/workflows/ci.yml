@@ -18,12 +18,10 @@ jobs:
         uses: astral-sh/setup-uv@v5
         with:
           version: "latest"
-
-      - name: Set up Python 3.13
-        run: uv python install 3.13
+          python-version: "3.13"
 
       - name: Create virtual environment
-        run: uv venv --python 3.13
+        run: uv venv
 
       - name: Install dev tools
         run: uv pip install ruff pytest pytest-asyncio
@@ -40,5 +38,13 @@ jobs:
       - name: Lint
         run: .venv/bin/ruff check .
 
-      - name: Test
-        run: .venv/bin/pytest
+      - name: Test (Linux-compatible tests only)
+        run: |
+          .venv/bin/pytest \
+            tests/test_cli_legacy_flags.py \
+            tests/test_cli_paired_flags.py \
+            tests/test_config_stateless.py \
+            tests/test_config_validation.py \
+            tests/test_desktop_views.py \
+            tests/test_paths.py \
+            tests/test_startup_task.py
