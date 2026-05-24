@@ -14,33 +14,33 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
       - name: Install uv
         uses: astral-sh/setup-uv@v5
         with:
           version: "latest"
-          python-version: "3.13"
-
-      - name: Create virtual environment
-        run: uv venv
 
       - name: Install dev tools
-        run: uv pip install ruff pytest pytest-asyncio
+        run: uv pip install --system ruff pytest pytest-asyncio
 
       - name: Install Linux-compatible runtime deps
         run: |
-          uv pip install \
+          uv pip install --system \
             click fastmcp fuzzywuzzy markdownify pillow platformdirs \
             posthog psutil python-levenshtein requests tabulate thefuzz uuid7
 
       - name: Install project (without Windows-only deps)
-        run: uv pip install --no-deps -e .
+        run: uv pip install --system --no-deps -e .
 
       - name: Lint
-        run: .venv/bin/ruff check .
+        run: ruff check .
 
       - name: Test (Linux-compatible tests only)
         run: |
-          .venv/bin/pytest \
+          pytest \
             tests/test_cli_legacy_flags.py \
             tests/test_cli_paired_flags.py \
             tests/test_config_stateless.py \
